@@ -1,0 +1,30 @@
+# Credentials and local config
+.env
+config.local.toml
+
+# Kuzu database files
+kuzu_db
+kuzu_db.wal
+*.kuzu
+
+# INFERRED edge backup (survives DB rebuilds, machine-local)
+inferred_edges.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Local source index (machine-specific paths, regenerate with mmx_local_index.py --build)
+local_sources.json
+
+# Logs
+*.log
+
+# OS and editor noise
+.DS_Store
+*.swp
+*.swo
