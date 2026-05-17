@@ -120,6 +120,28 @@ Even with `buffer_pool_size=2GB` set. All graph queries and syncs are broken.
 - [x] Add INFERRED edge export/import (`mmx_graph_write.py --export / --import`) so rebuilds are lossless
 - [x] Guard full sync against running on existing DB (would silently duplicate all edges)
 
+## Compositional interface for external consumers
+
+Context: a textbook-index DB project and a categorical sheaf project (zoom across type, composition, and complexification axes) need graph data from this project as scaffolding and seeding. High-effort sheaf tasks include curating complexification relations (e.g. organ systems complexify into a unit organism — emergent whole from composed parts). This project can surface candidates and expose its graph to those consumers.
+
+- [x] Design export schema v1.0: nodes with title, url, categories, subtypes, supertypes, parts, wholes, other SMW props, wikilinks; optional inferred_edges
+- [x] Implement `mmx_graph_export.py`: `--seed` (BFS from concept), `--category` (all pages in wiki category), `--complexification` (multi-hop Consists-of chains); importable API
+- [x] Graph query already importable as module (`mmx_graph_query.py` exposes `query()`, `search_by_title()`, `get_page_properties()`, etc.)
+- [x] Complexification candidates: 5,632 chains found (max depth 4); accessible via `mmx_graph_export.py --complexification`
+- [x] Interface contract documented in `mmx_graph_export.py` module docstring (schema v1.0, CLI flags, importable functions)
+
+## Inference write-back to wiki (==Inferred connections== section)
+
+Goal: instead of storing INFERRED edges locally in Kuzu, push them to the wiki as an `==Inferred connections==` section on each page — sentences containing SMW semantic links. The graph DB then picks them up on normal sync, making inferences first-class wiki content that survives rebuilds.
+
+Push (create new page) is already working via `mmxpush`. What is missing is the ability to **edit existing pages**.
+
+- [ ] Explore MediaWiki API edit endpoint: `action=edit` with `appendtext` or full `text` replacement — determine which is safer for appending a section without overwriting existing content
+- [ ] Check if bot account has edit permissions (may need different token type: `action=query&meta=tokens&type=csrf`)
+- [ ] Implement `mmx_wiki_edit.py`: fetch current wikitext, append or update `==Inferred connections==` section, POST edit back — idempotent (re-running replaces the section, does not duplicate it)
+- [ ] Define wikitext format for inferred connection sentences (e.g. `'''[[SourcePage]]''' [[has subject::TargetPage]] — ''claim text''.`)
+- [ ] Integrate with Claude Code skill: after reasoning session, offer to push inferred connections to wiki pages rather than writing local INFERRED edges
+
 ## Integration and documentation
 
 - [ ] Test end-to-end: query → reasoning → citation → write-back
