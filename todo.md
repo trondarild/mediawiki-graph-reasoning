@@ -145,5 +145,4 @@ Push (create new page) is already working via `mmxpush`. What is missing is the 
 ## Integration and documentation
 
 - [ ] Test end-to-end: query → reasoning → citation → write-back
-- [ ] README with setup and usage instructions
-- [ ] add migration instructions to README (when migrating the graph database to a new machine e.g.) 
+- [x] README with setup, usage, rebuild, and migration instructions
