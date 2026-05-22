@@ -119,6 +119,7 @@ Even with `buffer_pool_size=2GB` set. All graph queries and syncs are broken.
 - [x] Add DB size monitoring: `report_db_size()` runs after every sync, warns at 500MB, critical at 1GB
 - [x] Add INFERRED edge export/import (`mmx_graph_write.py --export / --import`) so rebuilds are lossless
 - [x] Guard full sync against running on existing DB (would silently duplicate all edges)
+- [ ] Move wikitext out of Kuzu into a SQLite sidecar (`mmx_wikitext.db`) — SQLite does in-place row updates with no copy-on-write dead space; Kuzu then holds only graph structure (nodes + edges), staying small indefinitely. Update `mmx_graph_sync.py` (write/read wikitext via SQLite), `mmx_graph_query.py` (excerpt from SQLite), and `mmx_graph_init.py` (create SQLite schema). Drop `wikitext` field from Kuzu `Page` node.
 
 ## Compositional interface for external consumers
 

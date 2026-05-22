@@ -7,6 +7,9 @@ kuzu_db
 kuzu_db.wal
 *.kuzu
 
+# SQLite wikitext sidecar (machine-local, regenerated on sync)
+mmx_wikitext.db
+
 # INFERRED edge backup (survives DB rebuilds, machine-local)
 inferred_edges.json
 

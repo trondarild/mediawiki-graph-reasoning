@@ -8,6 +8,7 @@ Output is structured text suitable for feeding to an LLM as grounding context.
 """
 
 import os
+import sqlite3
 import sys
 import kuzu
 from dotenv import load_dotenv
@@ -17,6 +18,9 @@ load_dotenv()
 DB_PATH = os.environ.get("MEMEX_DB_PATH")
 if not DB_PATH:
     raise RuntimeError("MEMEX_DB_PATH is not set. Copy config.example.env to .env and fill in values.")
+
+_db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+WIKITEXT_DB_PATH = os.path.join(_db_dir, "mmx_wikitext.db")
 
 
 def open_connection():
@@ -103,12 +107,12 @@ def get_backlinks(conn, title, limit=8):
 
 
 def get_wikitext(conn, title):
-    result = conn.execute(
-        "MATCH (p:Page {title: $title}) RETURN p.wikitext",
-        {"title": title}
-    )
-    if result.has_next():
-        return result.get_next()[0] or ""
+    if os.path.exists(WIKITEXT_DB_PATH):
+        sql = sqlite3.connect(WIKITEXT_DB_PATH)
+        row = sql.execute("SELECT wikitext FROM pages WHERE title = ?", (title,)).fetchone()
+        sql.close()
+        if row:
+            return row[0] or ""
     return ""
 
 

@@ -10,6 +10,7 @@ Reads config from .env (copy config.example.env and fill in values).
 
 import os
 import re
+import sqlite3
 import time
 import kuzu
 import requests
@@ -31,6 +32,9 @@ BOT_NAME  = _require("MEMEX_BOT_NAME")
 BOT_PASS  = _require("MEMEX_BOT_PASS")
 HTTP_USER = os.environ.get("MEMEX_HTTP_USER")
 HTTP_PASS = os.environ.get("MEMEX_HTTP_PASS")
+
+_db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+WIKITEXT_DB_PATH = os.path.join(_db_dir, "mmx_wikitext.db")
 
 RATE_LIMIT = 1.0  # seconds between requests
 
@@ -356,22 +360,21 @@ CHECKPOINT_INTERVAL = 500
 
 
 def populate_kuzu(titles, wikitext_map, smw_props, categories_map):
-    """Write all fetched data into the Kuzu graph database."""
+    """Write all fetched data into the Kuzu graph database and wikitext sidecar."""
     db = kuzu.Database(DB_PATH, buffer_pool_size=2 * 1024 * 1024 * 1024)
     conn = kuzu.Connection(db)
     titles_set = set(titles)
     now = datetime.now(timezone.utc).isoformat()
 
-    # --- Page nodes ---
+    # --- Page nodes (no wikitext in Kuzu — stored in SQLite sidecar) ---
     print("Inserting Page nodes...")
     for i, title in enumerate(titles):
         url = f"https://scribb.com/memex/index.php?title={title.replace(' ', '_')}"
-        wikitext = wikitext_map.get(title, "")
         cats = "|".join(categories_map.get(title, []))
         conn.execute(
             "MERGE (p:Page {title: $title}) "
-            "SET p.url = $url, p.wikitext = $wikitext, p.categories = $cats, p.last_synced = $ts",
-            {"title": title, "url": url, "wikitext": wikitext, "cats": cats, "ts": now}
+            "SET p.url = $url, p.categories = $cats, p.last_synced = $ts",
+            {"title": title, "url": url, "cats": cats, "ts": now}
         )
         if (i + 1) % CHECKPOINT_INTERVAL == 0:
             conn.execute("CHECKPOINT")
@@ -380,6 +383,16 @@ def populate_kuzu(titles, wikitext_map, smw_props, categories_map):
             print(f"  {i + 1}/{len(titles)} pages")
     conn.execute("CHECKPOINT")
     print(f"Inserted {len(titles)} Page nodes")
+
+    # --- Wikitext sidecar (SQLite) ---
+    sql = sqlite3.connect(WIKITEXT_DB_PATH)
+    sql.execute("CREATE TABLE IF NOT EXISTS pages (title TEXT PRIMARY KEY, wikitext TEXT, last_updated TEXT)")
+    sql.executemany(
+        "INSERT OR REPLACE INTO pages (title, wikitext, last_updated) VALUES (?, ?, ?)",
+        [(t, wikitext_map.get(t, ""), now) for t in titles]
+    )
+    sql.commit()
+    sql.close()
 
     # --- Concept nodes and HAS_PROP edges ---
     print("Inserting Concept nodes and HAS_PROP edges...")
@@ -459,15 +472,21 @@ def get_kuzu_last_synced():
     return result
 
 
-def update_page_in_kuzu(conn, title, wikitext, cats, titles_set, now):
-    """Update a single page node and rebuild its edges."""
+def update_page_in_kuzu(conn, sql_conn, title, wikitext, cats, titles_set, now):
+    """Update a single page node and rebuild its edges. Wikitext goes to SQLite sidecar."""
     url = f"https://scribb.com/memex/index.php?title={title.replace(' ', '_')}"
 
-    # Update node
+    # Update Kuzu node (no wikitext field)
     conn.execute(
         "MERGE (p:Page {title: $title}) "
-        "SET p.url = $url, p.wikitext = $wikitext, p.categories = $cats, p.last_synced = $ts",
-        {"title": title, "url": url, "wikitext": wikitext, "cats": cats, "ts": now}
+        "SET p.url = $url, p.categories = $cats, p.last_synced = $ts",
+        {"title": title, "url": url, "cats": cats, "ts": now}
+    )
+
+    # Update wikitext in SQLite sidecar
+    sql_conn.execute(
+        "INSERT OR REPLACE INTO pages (title, wikitext, last_updated) VALUES (?, ?, ?)",
+        (title, wikitext, now)
     )
 
     # Rebuild LINKS_TO edges: delete existing, re-insert from new wikitext
@@ -527,12 +546,14 @@ def sync_incremental():
     now = datetime.now(timezone.utc).isoformat()
     db = kuzu.Database(DB_PATH, buffer_pool_size=2 * 1024 * 1024 * 1024)
     conn = kuzu.Connection(db)
+    sql_conn = sqlite3.connect(WIKITEXT_DB_PATH)
+    sql_conn.execute("CREATE TABLE IF NOT EXISTS pages (title TEXT PRIMARY KEY, wikitext TEXT, last_updated TEXT)")
 
     print(f"Updating {len(to_update)} pages in Kuzu...")
     for i, title in enumerate(to_update):
         wikitext = wikitext_map.get(title, "")
         cats = "|".join(categories_map.get(title, []))
-        update_page_in_kuzu(conn, title, wikitext, cats, titles_set, now)
+        update_page_in_kuzu(conn, sql_conn, title, wikitext, cats, titles_set, now)
 
         # Re-insert HAS_PROP edges for this page
         for prop, value in smw_props.get(title, []):
@@ -544,29 +565,34 @@ def sync_incremental():
             )
         if (i + 1) % CHECKPOINT_INTERVAL == 0:
             conn.execute("CHECKPOINT")
+            sql_conn.commit()
             print(f"  {i + 1}/{len(to_update)} pages updated (checkpoint)")
         elif (i + 1) % 100 == 0:
             print(f"  {i + 1}/{len(to_update)} pages updated")
     conn.execute("CHECKPOINT")
+    sql_conn.commit()
+    sql_conn.close()
 
     print(f"Incremental sync complete. Updated {len(to_update)} pages.")
 
 
 def report_db_size():
-    """Print DB file size and warn if it looks bloated."""
-    size = os.path.getsize(DB_PATH)
-    mb = size / (1024 * 1024)
-    if mb >= 1024:
+    """Print Kuzu and SQLite sidecar sizes; warn if Kuzu looks bloated."""
+    kuzu_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+    sqlite_mb = os.path.getsize(WIKITEXT_DB_PATH) / (1024 * 1024) if os.path.exists(WIKITEXT_DB_PATH) else 0
+
+    if kuzu_mb >= 1024:
         level = "CRITICAL"
-    elif mb >= 500:
+    elif kuzu_mb >= 500:
         level = "WARNING"
     else:
         level = "OK"
-    print(f"DB size: {mb:.1f} MB [{level}]")
+
+    print(f"DB size: Kuzu {kuzu_mb:.1f} MB [{level}], SQLite wikitext {sqlite_mb:.1f} MB")
     if level == "WARNING":
-        print("  DB is growing large. Consider a full rebuild soon (drop kuzu_db, re-run without --incremental).")
+        print("  Kuzu is growing large. Consider a full rebuild soon (drop kuzu_db, re-run without --incremental).")
     if level == "CRITICAL":
-        print("  DB is likely bloated. Rebuild required: delete kuzu_db, run mmx_graph_init.py, then full sync.")
+        print("  Kuzu is likely bloated. Rebuild required: delete kuzu_db, run mmx_graph_init.py, then full sync.")
 
 
 if __name__ == "__main__":
